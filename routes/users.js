@@ -2,7 +2,7 @@
 const router = express.Router();
 const User = require("../models/User");
 const Article = require("../models/Article");
-const { protect } = require("../middleware/auth");
+const { protect, authorize } = require("../middleware/auth");
 
 // @route   GET /api/users/profile
 // @desc    Get current user profile
@@ -38,12 +38,13 @@ router.get("/profile", protect, async (req, res) => {
 });
 
 // @route   GET /api/users/authors
-// @desc    Get all authors
+// @desc    Get all authors (only approved ones for public view)
 // @access  Public
 router.get("/authors", async (req, res) => {
   try {
     const authors = await User.find({ 
       role: { $in: ["author", "admin"] },
+      status: "approved", // Only show approved authors to public
       totalArticles: { $gt: 0 }
     })
       .select("name avatar bio totalArticles totalViews followers")
@@ -146,6 +147,239 @@ router.post("/:id/follow", protect, async (req, res) => {
   } catch (error) {
     console.error("Follow user error:", error);
     res.status(500).json({ message: "Server error", error: error.message });
+  }
+});
+
+// ============ ADMIN WRITER MANAGEMENT ROUTES ============
+
+// @route   GET /api/users/admin/writers
+// @desc    Get all writers (authors) with filters - ADMIN ONLY
+// @access  Private/Admin
+router.get("/admin/writers", protect, authorize("admin"), async (req, res) => {
+  try {
+    const { status, search, page = 1, limit = 20 } = req.query;
+    
+    let query = { role: "author" };
+    
+    // Filter by status
+    if (status && status !== "all") {
+      query.status = status;
+    }
+    
+    // Search by name or email
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: "i" } },
+        { email: { $regex: search, $options: "i" } }
+      ];
+    }
+    
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    const writers = await User.find(query)
+      .select("-password")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .populate("approvedBy", "name");
+    
+    const total = await User.countDocuments(query);
+    
+    // Get article counts for each writer
+    const writersWithStats = await Promise.all(writers.map(async (writer) => {
+      const totalArticles = await Article.countDocuments({ author: writer._id });
+      const publishedArticles = await Article.countDocuments({ author: writer._id, status: "published" });
+      const draftArticles = totalArticles - publishedArticles;
+      
+      return {
+        ...writer.toObject(),
+        stats: {
+          totalArticles,
+          publishedArticles,
+          draftArticles
+        }
+      };
+    }));
+    
+    res.json({
+      success: true,
+      data: writersWithStats,
+      pagination: {
+        total,
+        page: parseInt(page),
+        pages: Math.ceil(total / parseInt(limit)),
+        limit: parseInt(limit)
+      }
+    });
+  } catch (error) {
+    console.error("Get writers error:", error);
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+});
+
+// @route   PUT /api/users/admin/writers/:id/approve
+// @desc    Approve a writer - ADMIN ONLY
+// @access  Private/Admin
+router.put("/admin/writers/:id/approve", protect, authorize("admin"), async (req, res) => {
+  try {
+    const writer = await User.findById(req.params.id);
+    
+    if (!writer) {
+      return res.status(404).json({ success: false, message: "Writer not found" });
+    }
+    
+    if (writer.role !== "author") {
+      return res.status(400).json({ success: false, message: "User is not an author" });
+    }
+    
+    writer.status = "approved";
+    writer.approvedAt = new Date();
+    writer.approvedBy = req.user._id;
+    
+    await writer.save();
+    
+    res.json({
+      success: true,
+      message: "Writer approved successfully",
+      data: writer
+    });
+  } catch (error) {
+    console.error("Approve writer error:", error);
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+});
+
+// @route   PUT /api/users/admin/writers/:id/suspend
+// @desc    Suspend a writer - ADMIN ONLY
+// @access  Private/Admin
+router.put("/admin/writers/:id/suspend", protect, authorize("admin"), async (req, res) => {
+  try {
+    const writer = await User.findById(req.params.id);
+    
+    if (!writer) {
+      return res.status(404).json({ success: false, message: "Writer not found" });
+    }
+    
+    if (writer.role !== "author") {
+      return res.status(400).json({ success: false, message: "User is not an author" });
+    }
+    
+    writer.status = "suspended";
+    await writer.save();
+    
+    res.json({
+      success: true,
+      message: "Writer suspended successfully",
+      data: writer
+    });
+  } catch (error) {
+    console.error("Suspend writer error:", error);
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+});
+
+// @route   PUT /api/users/admin/writers/:id/activate
+// @desc    Activate a suspended writer - ADMIN ONLY
+// @access  Private/Admin
+router.put("/admin/writers/:id/activate", protect, authorize("admin"), async (req, res) => {
+  try {
+    const writer = await User.findById(req.params.id);
+    
+    if (!writer) {
+      return res.status(404).json({ success: false, message: "Writer not found" });
+    }
+    
+    if (writer.role !== "author") {
+      return res.status(400).json({ success: false, message: "User is not an author" });
+    }
+    
+    writer.status = "approved";
+    await writer.save();
+    
+    res.json({
+      success: true,
+      message: "Writer activated successfully",
+      data: writer
+    });
+  } catch (error) {
+    console.error("Activate writer error:", error);
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+});
+
+// @route   DELETE /api/users/admin/writers/:id
+// @desc    Delete a writer - ADMIN ONLY
+// @access  Private/Admin
+router.delete("/admin/writers/:id", protect, authorize("admin"), async (req, res) => {
+  try {
+    const writer = await User.findById(req.params.id);
+    
+    if (!writer) {
+      return res.status(404).json({ success: false, message: "Writer not found" });
+    }
+    
+    if (writer.role !== "author") {
+      return res.status(400).json({ success: false, message: "User is not an author" });
+    }
+    
+    // Optionally: Delete all articles by this writer
+    const deleteArticles = req.query.deleteArticles === "true";
+    if (deleteArticles) {
+      await Article.deleteMany({ author: writer._id });
+    }
+    
+    await writer.deleteOne();
+    
+    res.json({
+      success: true,
+      message: "Writer deleted successfully",
+      articlesDeleted: deleteArticles
+    });
+  } catch (error) {
+    console.error("Delete writer error:", error);
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+});
+
+// @route   GET /api/users/admin/writers/stats
+// @desc    Get writer statistics for admin dashboard
+// @access  Private/Admin
+router.get("/admin/writers/stats", protect, authorize("admin"), async (req, res) => {
+  try {
+    const totalWriters = await User.countDocuments({ role: "author" });
+    const pendingWriters = await User.countDocuments({ role: "author", status: "pending" });
+    const approvedWriters = await User.countDocuments({ role: "author", status: "approved" });
+    const suspendedWriters = await User.countDocuments({ role: "author", status: "suspended" });
+    
+    // Get writers with most articles
+    const topWriters = await User.aggregate([
+      { $match: { role: "author", status: "approved" } },
+      { $lookup: {
+          from: "articles",
+          localField: "_id",
+          foreignField: "author",
+          as: "articles"
+        }
+      },
+      { $addFields: { articleCount: { $size: "$articles" } } },
+      { $sort: { articleCount: -1 } },
+      { $limit: 5 },
+      { $project: { name: 1, avatar: 1, articleCount: 1, totalViews: 1 } }
+    ]);
+    
+    res.json({
+      success: true,
+      data: {
+        totalWriters,
+        pendingWriters,
+        approvedWriters,
+        suspendedWriters,
+        topWriters
+      }
+    });
+  } catch (error) {
+    console.error("Get writer stats error:", error);
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 });
 

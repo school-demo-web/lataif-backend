@@ -25,6 +25,26 @@ const UserSchema = new mongoose.Schema({
     enum: ["admin", "author", "reader"],
     default: "reader"
   },
+  // NEW: Status for writer approval workflow
+  status: {
+    type: String,
+    enum: ["pending", "approved", "suspended"],
+    default: function() {
+      // Admin and readers are auto-approved, authors need approval
+      if (this.role === "admin") return "approved";
+      if (this.role === "author") return "pending";
+      return "approved"; // readers auto-approved
+    }
+  },
+  approvedAt: {
+    type: Date,
+    default: null
+  },
+  approvedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    default: null
+  },
   avatar: {
     type: String,
     default: ""
@@ -42,7 +62,6 @@ const UserSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: "User"
   }],
-  // NEW FIELD - Added for quick follower count access
   totalFollowers: {
     type: Number,
     default: 0
