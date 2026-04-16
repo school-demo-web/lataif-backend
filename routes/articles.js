@@ -5,10 +5,6 @@ const User = require("../models/User");
 const Category = require("../models/Category");
 const { protect, authorize } = require("../middleware/auth");
 
-
-
-
-
 // @route   GET /api/articles
 // @desc    Get all articles (paginated)
 // @access  Public
@@ -75,18 +71,15 @@ router.get("/:id", async (req, res) => {
       return res.status(404).json({ message: "Article not found" });
     }
     
-    // Increment view count
     article.views += 1;
     await article.save();
     
-    // Update author's total views
     if (article.author) {
       await User.findByIdAndUpdate(article.author._id, {
         $inc: { totalViews: 1 }
       });
     }
     
-    // Get related articles
     const relatedArticles = await Article.find({
       _id: { $ne: article._id },
       category: article.category?._id,
@@ -116,6 +109,47 @@ router.post("/", protect, authorize("author", "admin"), async (req, res) => {
     
     await User.findByIdAndUpdate(req.user._id, { $inc: { totalArticles: 1 } });
     await Category.findByIdAndUpdate(article.category, { $inc: { articleCount: 1 } });
+    
+    // PUSH NOTIFICATIONS - Completely disabled for now to fix posting
+    // Will enable separately after fixing
+    /*
+    if (article.status === 'published') {
+      try {
+        const Subscription = require('../models/Subscription');
+        const webPush = require('web-push');
+        
+        if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+          webPush.setVapidDetails(
+            process.env.VAPID_SUBJECT || 'mailto:admin@lataif.com',
+            process.env.VAPID_PUBLIC_KEY,
+            process.env.VAPID_PRIVATE_KEY
+          );
+          
+          const subscriptions = await Subscription.find();
+          if (subscriptions.length > 0) {
+            const payload = JSON.stringify({
+              title: '📝 نئی تحریر شائع ہوگئی!',
+              body: article.title.substring(0, 100),
+              icon: '/logo.png',
+              data: { url: `/article_detail?id=${article._id}` }
+            });
+            
+            for (const sub of subscriptions) {
+              try {
+                await webPush.sendNotification(sub, payload);
+              } catch(e) {
+                if (e.statusCode === 410) {
+                  await Subscription.deleteOne({ _id: sub._id });
+                }
+              }
+            }
+          }
+        }
+      } catch (pushError) {
+        console.error('Push notification error:', pushError.message);
+      }
+    }
+    */
     
     res.status(201).json({ success: true, data: article });
   } catch (error) {
@@ -167,11 +201,8 @@ router.delete("/:id", protect, async (req, res) => {
   }
 });
 
-// ============================================
-// UPDATED LIKE ROUTE - Works with Auth OR DeviceID
-// ============================================
 // @route   POST /api/articles/:id/like
-// @desc    Like/Unlike article (Works for guests with deviceId)
+// @desc    Like/Unlike article
 // @access  Public
 router.post("/:id/like", async (req, res) => {
   try {
@@ -182,19 +213,15 @@ router.post("/:id/like", async (req, res) => {
     
     const { deviceId } = req.body;
     
-    // Check if user is authenticated
     let identifier = null;
     if (req.headers.authorization) {
       try {
         const token = req.headers.authorization.split(" ")[1];
         const decoded = require("jsonwebtoken").verify(token, process.env.JWT_SECRET);
         identifier = decoded.id.toString();
-      } catch (e) {
-        // Token invalid, fall back to deviceId
-      }
+      } catch (e) {}
     }
     
-    // If not authenticated, use deviceId
     if (!identifier) {
       if (!deviceId) {
         return res.status(400).json({ 
@@ -205,7 +232,6 @@ router.post("/:id/like", async (req, res) => {
       identifier = deviceId;
     }
     
-    // Check if already liked (likes array stores strings)
     const likeIndex = article.likes.findIndex(id => id.toString() === identifier);
     
     if (likeIndex === -1) {
