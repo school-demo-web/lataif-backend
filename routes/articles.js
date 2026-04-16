@@ -112,7 +112,7 @@ router.post("/", protect, authorize("author", "admin"), async (req, res) => {
     
     // PUSH NOTIFICATIONS - Completely disabled for now to fix posting
     // Will enable separately after fixing
-    /*
+    
     if (article.status === 'published') {
       try {
         const Subscription = require('../models/Subscription');
@@ -149,7 +149,7 @@ router.post("/", protect, authorize("author", "admin"), async (req, res) => {
         console.error('Push notification error:', pushError.message);
       }
     }
-    */
+    
     
     res.status(201).json({ success: true, data: article });
   } catch (error) {
