@@ -5,6 +5,21 @@ const User = require("../models/User");
 const Category = require("../models/Category");
 const { protect, authorize } = require("../middleware/auth");
 
+
+
+// Add at the top with other requires
+const webPush = require('web-push');
+const Subscription = require('../models/Subscription');
+
+// Configure web-push (if not already configured)
+if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+  webPush.setVapidDetails(
+    process.env.VAPID_SUBJECT || 'mailto:admin@lataif.com',
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY
+  );
+}
+
 // @route   GET /api/articles
 // @desc    Get all articles (paginated)
 // @access  Public
