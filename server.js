@@ -18,7 +18,7 @@ const subscriberRoutes = require("./routes/subscribers");
 const followRoutes = require("./routes/follows");
 const dashboardRoutes = require("./routes/dashboard");
 const pushRoutes = require("./routes/push");
-
+const bookRoutes = require("./routes/books");
 const app = express();
 
 const corsOptions = {
@@ -78,7 +78,7 @@ app.use("/api/subscribers", subscriberRoutes);
 app.use("/api/follows", followRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/push", pushRoutes);
-
+app.use("/api/books", bookRoutes);
 app.get("/api/health", (req, res) => {
   res.json({ 
     status: "OK", 
