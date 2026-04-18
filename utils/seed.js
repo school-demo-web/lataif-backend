@@ -148,7 +148,7 @@ const seedDatabase = async () => {
     }
     
     console.log("✅ Database seeded successfully!");
-    console.log("📧 Admin Login: admin@editorialflow.com / Admin@123");
+    console.log("📧 Admin Login: admin@lataifeadab.com / Admin@123");
     console.log("📧 Author Login: ahmed@editorialflow.com / Author@123");
     
     process.exit(0);
