@@ -5,9 +5,41 @@ const User = require("../models/User");
 const Category = require("../models/Category");
 const { protect, authorize } = require("../middleware/auth");
 
-// @route   GET /api/articles
-// @desc    Get all articles (paginated)
-// @access  Public
+// ============================================
+// HELPER FUNCTION - Recalculate author stats
+// ============================================
+async function updateAuthorStats(authorId) {
+  try {
+    // Count published articles
+    const totalArticles = await Article.countDocuments({ 
+      author: authorId, 
+      status: "published" 
+    });
+    
+    // Sum all views from published articles
+    const articles = await Article.find({ 
+      author: authorId, 
+      status: "published" 
+    });
+    const totalViews = articles.reduce((sum, article) => sum + (article.views || 0), 0);
+    
+    // Update user with accurate stats
+    await User.findByIdAndUpdate(authorId, {
+      totalArticles,
+      totalViews
+    });
+    
+    console.log(`📊 Updated author ${authorId}: ${totalArticles} articles, ${totalViews} views`);
+    return { totalArticles, totalViews };
+  } catch (error) {
+    console.error("Update author stats error:", error);
+    return null;
+  }
+}
+
+// ============================================
+// GET /api/articles - Get all articles (paginated)
+// ============================================
 router.get("/", async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -40,9 +72,9 @@ router.get("/", async (req, res) => {
   }
 });
 
-// @route   GET /api/articles/trending
-// @desc    Get trending articles
-// @access  Public
+// ============================================
+// GET /api/articles/trending - Get trending articles
+// ============================================
 router.get("/trending", async (req, res) => {
   try {
     const articles = await Article.find({ status: "published" })
@@ -58,9 +90,9 @@ router.get("/trending", async (req, res) => {
   }
 });
 
-// @route   GET /api/articles/:id
-// @desc    Get single article by ID
-// @access  Public
+// ============================================
+// GET /api/articles/:id - Get single article
+// ============================================
 router.get("/:id", async (req, res) => {
   try {
     const article = await Article.findById(req.params.id)
@@ -71,13 +103,13 @@ router.get("/:id", async (req, res) => {
       return res.status(404).json({ message: "Article not found" });
     }
     
+    // Increment view count
     article.views += 1;
     await article.save();
     
+    // Update author's total views (recalculate for accuracy)
     if (article.author) {
-      await User.findByIdAndUpdate(article.author._id, {
-        $inc: { totalViews: 1 }
-      });
+      await updateAuthorStats(article.author._id);
     }
     
     const relatedArticles = await Article.find({
@@ -99,20 +131,30 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// @route   POST /api/articles
-// @desc    Create new article
-// @access  Private (Author/Admin)
+// ============================================
+// POST /api/articles - Create new article
+// ============================================
 router.post("/", protect, authorize("author", "admin"), async (req, res) => {
   try {
-    const articleData = { ...req.body, author: req.user._id };
+    const articleData = { 
+      ...req.body, 
+      author: req.user._id,
+      publishedAt: req.body.status === 'published' ? new Date() : null
+    };
+    
     const article = await Article.create(articleData);
     
-    await User.findByIdAndUpdate(req.user._id, { $inc: { totalArticles: 1 } });
-    await Category.findByIdAndUpdate(article.category, { $inc: { articleCount: 1 } });
+    // Update category article count
+    if (article.category) {
+      await Category.findByIdAndUpdate(article.category, { 
+        $inc: { articleCount: 1 } 
+      });
+    }
     
-    // PUSH NOTIFICATIONS - Completely disabled for now to fix posting
-    // Will enable separately after fixing
+    // ✅ RECALCULATE author stats (instead of just incrementing)
+    await updateAuthorStats(req.user._id);
     
+    // Push notifications for published articles
     if (article.status === 'published') {
       try {
         const Subscription = require('../models/Subscription');
@@ -150,7 +192,6 @@ router.post("/", protect, authorize("author", "admin"), async (req, res) => {
       }
     }
     
-    
     res.status(201).json({ success: true, data: article });
   } catch (error) {
     console.error("Create article error:", error);
@@ -158,19 +199,49 @@ router.post("/", protect, authorize("author", "admin"), async (req, res) => {
   }
 });
 
-// @route   PUT /api/articles/:id
-// @desc    Update article
-// @access  Private (Owner/Admin)
+// ============================================
+// PUT /api/articles/:id - Update article
+// ============================================
 router.put("/:id", protect, async (req, res) => {
   try {
     let article = await Article.findById(req.params.id);
     if (!article) return res.status(404).json({ message: "Article not found" });
     
+    // Check authorization
     if (article.author.toString() !== req.user._id.toString() && req.user.role !== "admin") {
       return res.status(403).json({ message: "Not authorized" });
     }
     
-    article = await Article.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+    const oldStatus = article.status;
+    const oldCategory = article.category?.toString();
+    
+    // Update article
+    const updateData = { ...req.body };
+    
+    // Set publishedAt if status changed to published
+    if (oldStatus !== 'published' && req.body.status === 'published') {
+      updateData.publishedAt = new Date();
+    }
+    
+    article = await Article.findByIdAndUpdate(
+      req.params.id, 
+      updateData, 
+      { new: true, runValidators: true }
+    );
+    
+    // Handle category change
+    if (oldCategory !== article.category?.toString()) {
+      if (oldCategory) {
+        await Category.findByIdAndUpdate(oldCategory, { $inc: { articleCount: -1 } });
+      }
+      if (article.category) {
+        await Category.findByIdAndUpdate(article.category, { $inc: { articleCount: 1 } });
+      }
+    }
+    
+    // ✅ RECALCULATE author stats (especially important if status changed)
+    await updateAuthorStats(article.author);
+    
     res.json({ success: true, data: article });
   } catch (error) {
     console.error("Update article error:", error);
@@ -178,21 +249,32 @@ router.put("/:id", protect, async (req, res) => {
   }
 });
 
-// @route   DELETE /api/articles/:id
-// @desc    Delete article
-// @access  Private (Owner/Admin)
+// ============================================
+// DELETE /api/articles/:id - Delete article
+// ============================================
 router.delete("/:id", protect, async (req, res) => {
   try {
     const article = await Article.findById(req.params.id);
     if (!article) return res.status(404).json({ message: "Article not found" });
     
+    // Check authorization
     if (article.author.toString() !== req.user._id.toString() && req.user.role !== "admin") {
       return res.status(403).json({ message: "Not authorized" });
     }
     
+    const authorId = article.author;
+    const categoryId = article.category;
+    
+    // Delete article
     await article.deleteOne();
-    await User.findByIdAndUpdate(article.author, { $inc: { totalArticles: -1 } });
-    await Category.findByIdAndUpdate(article.category, { $inc: { articleCount: -1 } });
+    
+    // Update category count
+    if (categoryId) {
+      await Category.findByIdAndUpdate(categoryId, { $inc: { articleCount: -1 } });
+    }
+    
+    // ✅ RECALCULATE author stats (instead of just decrementing)
+    await updateAuthorStats(authorId);
     
     res.json({ success: true, message: "Article deleted successfully" });
   } catch (error) {
@@ -201,9 +283,9 @@ router.delete("/:id", protect, async (req, res) => {
   }
 });
 
-// @route   POST /api/articles/:id/like
-// @desc    Like/Unlike article
-// @access  Public
+// ============================================
+// POST /api/articles/:id/like - Like/Unlike article
+// ============================================
 router.post("/:id/like", async (req, res) => {
   try {
     const article = await Article.findById(req.params.id);
@@ -250,6 +332,36 @@ router.post("/:id/like", async (req, res) => {
     
   } catch (error) {
     console.error("Like article error:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+});
+
+// ============================================
+// POST /api/articles/fix-all-stats - Fix all author stats (Admin only)
+// ============================================
+router.post("/fix-all-stats", protect, authorize("admin"), async (req, res) => {
+  try {
+    const authors = await User.find({ role: { $in: ["author", "admin"] } });
+    const results = [];
+    
+    for (const author of authors) {
+      const stats = await updateAuthorStats(author._id);
+      if (stats) {
+        results.push({
+          author: author.name,
+          totalArticles: stats.totalArticles,
+          totalViews: stats.totalViews
+        });
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Fixed stats for ${results.length} authors`,
+      data: results
+    });
+  } catch (error) {
+    console.error("Fix all stats error:", error);
     res.status(500).json({ message: "Server error", error: error.message });
   }
 });

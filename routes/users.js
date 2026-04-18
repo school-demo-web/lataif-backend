@@ -17,21 +17,61 @@ router.get("/authors", async (req, res) => {
     try {
         const limit = parseInt(req.query.limit) || 6;
 
+        // ✅ FIXED: Only fetch authors with role "author" (exclude admins)
+        const authors = await User.find({
+            role: "author",  // ← CHANGED: Only authors, not admins
+            status: "approved"
+        })
+            .select("name avatar bio totalArticles totalViews followers")
+            .sort({ totalArticles: -1, totalViews: -1 })
+            .limit(limit);
+
+        // Calculate followers count for each author
+        const authorsWithStats = authors.map(author => ({
+            ...author.toObject(),
+            followersCount: author.followers?.length || 0
+        }));
+
+        res.json({
+            success: true,
+            count: authorsWithStats.length,
+            data: authorsWithStats
+        });
+    } catch (error) {
+        console.error("Get popular authors error:", error);
+        res.status(500).json({ 
+            success: false, 
+            message: "Server error while fetching authors" 
+        });
+    }
+});
+
+/**
+ * @route   GET /api/users/authors/all
+ * @desc    Get all approved authors including admins (for admin use)
+ * @access  Public (can be used for filters)
+ */
+router.get("/authors/all", async (req, res) => {
+    try {
         const authors = await User.find({
             role: { $in: ["author", "admin"] },
             status: "approved"
         })
-            .select("name avatar bio totalArticles totalViews totalFollowers")
-            .sort({ totalArticles: -1, totalViews: -1, createdAt: -1 })
-            .limit(limit);
+            .select("name avatar bio totalArticles totalViews followers role")
+            .sort({ role: 1, totalArticles: -1 });
+
+        const authorsWithStats = authors.map(author => ({
+            ...author.toObject(),
+            followersCount: author.followers?.length || 0
+        }));
 
         res.json({
             success: true,
-            count: authors.length,
-            data: authors
+            count: authorsWithStats.length,
+            data: authorsWithStats
         });
     } catch (error) {
-        console.error("Get popular authors error:", error);
+        console.error("Get all authors error:", error);
         res.status(500).json({ 
             success: false, 
             message: "Server error while fetching authors" 
@@ -70,7 +110,7 @@ router.get("/profile", protect, async (req, res) => {
         userData.totalArticles = totalArticles;
         userData.publishedArticles = publishedArticles;
         userData.totalViews = viewsResult[0]?.totalViews || 0;
-        userData.totalFollowers = user.followers?.length || 0;
+        userData.followersCount = user.followers?.length || 0;
 
         res.json({ success: true, data: userData });
     } catch (error) {
@@ -102,10 +142,26 @@ router.get("/:id", async (req, res) => {
             .sort({ publishedAt: -1 })
             .limit(10);
 
+        // Calculate accurate stats
+        const totalArticles = await Article.countDocuments({ 
+            author: user._id, 
+            status: "published" 
+        });
+        
+        const viewsResult = await Article.aggregate([
+            { $match: { author: user._id, status: "published" } },
+            { $group: { _id: null, totalViews: { $sum: "$views" } } }
+        ]);
+
+        const userData = user.toObject();
+        userData.totalArticles = totalArticles;
+        userData.totalViews = viewsResult[0]?.totalViews || 0;
+        userData.followersCount = user.followers?.length || 0;
+
         res.json({ 
             success: true, 
             data: { 
-                user, 
+                user: userData, 
                 articles 
             } 
         });
@@ -200,19 +256,9 @@ router.post("/:id/follow", protect, async (req, res) => {
     }
 });
 
-
-// You can keep your existing admin routes for approve/suspend/delete if you want.
-// For now, I'm keeping them commented so the file stays clean.
-// Uncomment and use them as needed.
-
-/*
-router.put("/admin/writers/:id/approve", protect, authorize("admin"), ...);
-router.put("/admin/writers/:id/suspend", protect, authorize("admin"), ...);
-router.put("/admin/writers/:id/activate", protect, authorize("admin"), ...);
-router.delete("/admin/writers/:id", protect, authorize("admin"), ...);
-*/
-
-// ============ ADMIN WRITER MANAGEMENT ROUTES ============
+// =============================================
+// ADMIN WRITER MANAGEMENT ROUTES
+// =============================================
 
 // @route   GET /api/users/admin/writers
 // @desc    Get all writers (authors) with filters - ADMIN ONLY
@@ -223,12 +269,10 @@ router.get("/admin/writers", protect, authorize("admin"), async (req, res) => {
     
     let query = { role: "author" };
     
-    // Filter by status
     if (status && status !== "all") {
       query.status = status;
     }
     
-    // Search by name or email
     if (search) {
       query.$or = [
         { name: { $regex: search, $options: "i" } },
@@ -247,7 +291,6 @@ router.get("/admin/writers", protect, authorize("admin"), async (req, res) => {
     
     const total = await User.countDocuments(query);
     
-    // Get article counts for each writer
     const writersWithStats = await Promise.all(writers.map(async (writer) => {
       const totalArticles = await Article.countDocuments({ author: writer._id });
       const publishedArticles = await Article.countDocuments({ author: writer._id, status: "published" });
@@ -384,7 +427,6 @@ router.delete("/admin/writers/:id", protect, authorize("admin"), async (req, res
       return res.status(400).json({ success: false, message: "User is not an author" });
     }
     
-    // Optionally: Delete all articles by this writer
     const deleteArticles = req.query.deleteArticles === "true";
     if (deleteArticles) {
       await Article.deleteMany({ author: writer._id });
@@ -413,7 +455,6 @@ router.get("/admin/writers/stats", protect, authorize("admin"), async (req, res)
     const approvedWriters = await User.countDocuments({ role: "author", status: "approved" });
     const suspendedWriters = await User.countDocuments({ role: "author", status: "suspended" });
     
-    // Get writers with most articles
     const topWriters = await User.aggregate([
       { $match: { role: "author", status: "approved" } },
       { $lookup: {
